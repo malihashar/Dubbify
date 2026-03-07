@@ -5,6 +5,7 @@ import { Phone, Mic, Languages, PhoneOff, PhoneIncoming } from "lucide-react";
 import Link from "next/link";
 import { EmptyCallState } from "@/components/call/EmptyCallState";
 import { IncomingCallState } from "@/components/call/IncomingCallState";
+import { VoiceWaveAnimation } from "@/components/call/voice-wave-animation";
 import { CallDurationDisplay } from "@/components/call/CallDurationDisplay";
 import { useCallWebSocket } from "@/hooks/use-call-websocket";
 
@@ -129,11 +130,15 @@ export function PhoneCallScreen() {
             disabled={callState !== "connected"}
             className={`flex items-center justify-center gap-3 py-6 rounded-2xl transition-all ${
               isRecording
-                ? "bg-red-500 hover:bg-red-600 animate-pulse"
+                ? "bg-red-500 hover:bg-red-600"
                 : "bg-green-500 hover:bg-green-600"
             } text-white shadow-lg disabled:opacity-50 disabled:cursor-not-allowed`}
           >
-            <Mic className="size-6" />
+            {isRecording ? (
+              <VoiceWaveAnimation />
+            ) : (
+              <Mic className="size-6" />
+            )}
             <span className="text-lg">
               {isRecording ? "Recording..." : "Respond with Voice"}
             </span>
