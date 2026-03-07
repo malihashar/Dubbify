@@ -1,4 +1,16 @@
+"use client";
+
+import { Suspense } from "react";
 import { PhoneCallScreen } from "@/views/TranslatePhoneCallScreen";
-export default function App() {
-    return <PhoneCallScreen />;
+import { Topbar } from "@/components/layout/topbar";
+
+export default function TranslatePhoneCallPage() {
+  return (
+    <>
+      <Topbar />
+      <Suspense>
+        <PhoneCallScreen />
+      </Suspense>
+    </>
+  );
 }
