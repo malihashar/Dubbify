@@ -28,6 +28,8 @@ from pydantic import BaseModel
 from api.routes import router as api_router
 from api.websocket import websocket_endpoint
 from twilio.twiml.voice_response import VoiceResponse, Dial
+from api.call_routes import call_router
+
 app = FastAPI(
     title="Multilingual Call Relay API",
     description="AI-assisted translation and human relay for non-English callers.",
@@ -40,6 +42,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 app.include_router(api_router, tags=["api"])
+app.include_router(call_router)
 app.websocket("/ws")(websocket_endpoint)
 
 
