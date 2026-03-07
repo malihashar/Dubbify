@@ -1,27 +1,31 @@
 "use client";
 
 import { useState, useEffect, useCallback, useRef } from "react";
-import { useRouter } from "next/navigation";
-import { Mic, MicOff, Volume2, VolumeX } from "lucide-react";
+import { useSearchParams } from "next/navigation";
+import Link from "next/link";
+import { Mic, MicOff, Volume2, VolumeX, PhoneIncoming } from "lucide-react";
 import { CallStatusIndicator } from "@/components/call/CallStatusIndicator";
 import { PhoneNumberCard } from "@/components/call/PhoneNumberCard";
 import { EndCallButton } from "@/components/call/EndCallButton";
 import { CallDurationDisplay } from "@/components/call/CallDurationDisplay";
+import { EmptyCallState } from "@/components/call/EmptyCallState";
+import { IncomingCallState } from "@/components/call/IncomingCallState";
 
-type CallState = "connecting" | "connected" | "ended";
+type CallState = "idle" | "ringing" | "connecting" | "connected" | "ended";
 
 /**
- * NormalCallScreen - Active call screen matching the Figma ActiveCall design.
- * Green gradient, 2-col mute/speaker grid, lucide-react icons, no header.
+ * NormalCallScreen - Active call screen with idle/ringing/active states.
+ * Green gradient, 2-col mute/speaker grid, lucide-react icons.
  */
 export function NormalCallScreen() {
-  const router = useRouter();
-
-  const [callState, setCallState] = useState<CallState>("connected");
+  const searchParams = useSearchParams();
+  const startActive = searchParams.get("active") === "true";
+  const [callState, setCallState] = useState<CallState>(startActive ? "connected" : "idle");
   const [isMuted, setIsMuted] = useState(false);
   const [isSpeakerOn, setIsSpeakerOn] = useState(false);
   const [durationSeconds, setDurationSeconds] = useState(0);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const phoneNumber = "+1 (555) 987-6543";
 
@@ -41,24 +45,70 @@ export function NormalCallScreen() {
     };
   }, [callState]);
 
+  // Cleanup timeouts on unmount
+  useEffect(() => {
+    return () => {
+      if (timeoutRef.current) clearTimeout(timeoutRef.current);
+    };
+  }, []);
+
+  const handleAcceptCall = useCallback(() => {
+    setCallState("connecting");
+    setDurationSeconds(0);
+    timeoutRef.current = setTimeout(() => setCallState("connected"), 1500);
+  }, []);
+
+  const handleDeclineCall = useCallback(() => {
+    setCallState("idle");
+  }, []);
+
   const handleEndCall = useCallback(() => {
     setCallState("ended");
     if (timerRef.current) {
       clearInterval(timerRef.current);
       timerRef.current = null;
     }
+    timeoutRef.current = setTimeout(() => setCallState("idle"), 2000);
   }, []);
 
+  const handleSimulateCall = useCallback(() => {
+    setCallState("ringing");
+  }, []);
+
+  // Idle state
+  if (callState === "idle") {
+    return (
+      <EmptyCallState>
+        <button
+          onClick={handleSimulateCall}
+          className="mt-6 flex items-center justify-center gap-2 px-6 py-3 rounded-2xl bg-blue-500 hover:bg-blue-600 text-white shadow-lg transition-colors cursor-pointer"
+        >
+          <PhoneIncoming className="size-5" />
+          <span>Simulate Incoming Call</span>
+        </button>
+      </EmptyCallState>
+    );
+  }
+
+  // Ringing state
+  if (callState === "ringing") {
+    return (
+      <IncomingCallState
+        phoneNumber={phoneNumber}
+        onAccept={handleAcceptCall}
+        onDecline={handleDeclineCall}
+      />
+    );
+  }
+
+  // Active call states (connecting / connected / ended)
   return (
     <div className="flex flex-col items-center justify-center min-h-[calc(100vh-73px)] bg-gradient-to-b from-green-50 to-white dark:from-gray-900 dark:to-gray-800 px-6 py-12">
       <div className="w-full max-w-md">
-        {/* Call status icon + text */}
         <CallStatusIndicator status={callState} />
-
-        {/* Connected phone number card */}
         <PhoneNumberCard phoneNumber={phoneNumber} />
 
-        {/* Control buttons: Mute + Speaker in 2-col grid */}
+        {/* Control buttons: Mute + Speaker */}
         <div className="grid grid-cols-2 gap-4 mb-6">
           <button
             onClick={() => setIsMuted((prev) => !prev)}
@@ -85,20 +135,18 @@ export function NormalCallScreen() {
           </button>
         </div>
 
-        {/* End call button */}
         <EndCallButton onClick={handleEndCall} disabled={callState === "ended"} />
 
         {/* Navigation link */}
         <div className="text-center mt-6">
-          <button
-            onClick={() => router.push("/")}
-            className="text-sm text-blue-600 dark:text-blue-400 hover:underline cursor-pointer transition-colors duration-200"
+          <Link
+            href="/TranslatePhoneCall?active=true"
+            className="text-sm text-blue-600 dark:text-blue-400 hover:underline transition-colors duration-200"
           >
-            View incoming call with translation
-          </button>
+            View call with translation
+          </Link>
         </div>
 
-        {/* Duration display */}
         <div className="text-center mt-8">
           <CallDurationDisplay durationSeconds={durationSeconds} />
         </div>
