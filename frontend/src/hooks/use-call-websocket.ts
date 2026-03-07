@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useEffect, useCallback, useRef } from "react";
 import {
   initiateCall as apiInitiateCall,
   acceptCall as apiAcceptCall,
@@ -14,17 +14,8 @@ import {
   WS_MSG_CALL_ENDED,
   WS_MSG_TRANSCRIPT_UPDATE,
 } from "@/services/ws-message-types";
-
-export type CallState = "idle" | "ringing" | "connecting" | "connected" | "ended";
-
-export type TranscriptMessage = {
-  id: string;
-  sender: string;
-  original_text: string;
-  translated_text: string | null;
-  language_code: string | null;
-  timestamp?: string | null;
-};
+import { useCallStore } from "@/stores/call-store";
+import type { TranscriptMessage } from "@/stores/call-store";
 
 type WsMessage = {
   type: string;
@@ -38,19 +29,22 @@ const WS_URL = process.env.NEXT_PUBLIC_WS_URL ?? "ws://localhost:8000/ws";
 const MAX_RETRIES = 3;
 const BACKOFF_MS = [1000, 2000, 4000];
 
+/**
+ * Manages the WebSocket connection and syncs events to the global call store.
+ * Multiple components can call this hook — the store state is shared across pages.
+ */
 export function useCallWebSocket() {
   const wsRef = useRef<WebSocket | null>(null);
   const retryCountRef = useRef(0);
   const mountedRef = useRef(true);
 
-  const [callState, setCallState] = useState<CallState>("idle");
-  const [sessionId, setSessionId] = useState<string | null>(null);
-  const [callerNumber, setCallerNumber] = useState<string | null>(null);
-  const [callerLanguage, setCallerLanguage] = useState<string | null>(null);
-  const [messages, setMessages] = useState<TranscriptMessage[]>([]);
-  const [isConnected, setIsConnected] = useState(false);
+  const {
+    callState, sessionId, callerNumber, callerLanguage, messages, isConnected,
+    setCallState, setSessionId, setCallerNumber, setCallerLanguage,
+    addMessage, setIsConnected, resetCall,
+  } = useCallStore();
 
-  // Store sessionId in ref so WS handlers always have latest value
+  // Keep sessionId in ref so WS handlers always have latest value
   const sessionIdRef = useRef(sessionId);
   sessionIdRef.current = sessionId;
 
@@ -68,7 +62,6 @@ export function useCallWebSocket() {
         setSessionId(msg.session_id ?? null);
         setCallerNumber(msg.caller_number ?? null);
         setCallerLanguage(msg.caller_language ?? null);
-        setMessages([]);
         break;
 
       case WS_MSG_CALL_ACCEPTED:
@@ -79,34 +72,29 @@ export function useCallWebSocket() {
         break;
 
       case WS_MSG_CALL_DECLINED:
-        setCallState("idle");
-        setSessionId(null);
-        setCallerNumber(null);
-        setCallerLanguage(null);
+        resetCall();
         break;
 
       case WS_MSG_CALL_ENDED:
         setCallState("ended");
         setTimeout(() => {
-          if (!mountedRef.current) return;
-          setCallState("idle");
-          setSessionId(null);
-          setCallerNumber(null);
-          setCallerLanguage(null);
-          setMessages([]);
+          if (mountedRef.current) resetCall();
         }, 2000);
         break;
 
       case WS_MSG_TRANSCRIPT_UPDATE:
         if (msg.message) {
-          setMessages((prev) => [...prev, msg.message!]);
+          addMessage(msg.message);
         }
         break;
     }
-  }, []);
+  }, [setCallState, setSessionId, setCallerNumber, setCallerLanguage, addMessage, resetCall]);
 
   const connect = useCallback(() => {
     if (!mountedRef.current) return;
+    // Don't open a second connection if one is already open
+    if (wsRef.current?.readyState === WebSocket.OPEN || wsRef.current?.readyState === WebSocket.CONNECTING) return;
+
     try {
       const ws = new WebSocket(WS_URL);
       wsRef.current = ws;
@@ -133,7 +121,7 @@ export function useCallWebSocket() {
     } catch {
       // connection failed, onclose handles retry
     }
-  }, [handleWsMessage]);
+  }, [handleWsMessage, setIsConnected]);
 
   // Connect on mount, disconnect on unmount
   useEffect(() => {
@@ -153,43 +141,62 @@ export function useCallWebSocket() {
   }, []);
 
   const simulateIncomingCall = useCallback(async (number?: string, language?: string) => {
+    // Update local state immediately so UI responds even without backend
+    setCallState("ringing");
+    setCallerNumber(number ?? "Unknown");
+    setCallerLanguage(language ?? null);
     try {
-      await apiInitiateCall(number ?? "Unknown", language);
+      const result = await apiInitiateCall(number ?? "Unknown", language);
+      setSessionId(result.session_id ?? null);
     } catch (err) {
       console.error("Failed to initiate call:", err);
+      // Generate a local session ID so accept/end still work offline
+      setSessionId(`local-${Date.now()}`);
     }
-  }, []);
+  }, [setCallState, setCallerNumber, setCallerLanguage, setSessionId]);
 
   const acceptCall = useCallback(async () => {
     const sid = sessionIdRef.current;
     if (!sid) return;
+    // Update local state immediately so UI responds
+    setCallState("connecting");
+    setTimeout(() => {
+      if (mountedRef.current) setCallState("connected");
+    }, 1500);
     try {
       await apiAcceptCall(sid);
       subscribeToSession(sid);
     } catch (err) {
       console.error("Failed to accept call:", err);
     }
-  }, [subscribeToSession]);
+  }, [setCallState, subscribeToSession]);
 
   const declineCall = useCallback(async () => {
     const sid = sessionIdRef.current;
     if (!sid) return;
+    // Reset local state immediately
+    resetCall();
     try {
       await apiDeclineCall(sid);
     } catch (err) {
       console.error("Failed to decline call:", err);
     }
-  }, []);
+  }, [resetCall]);
 
   const endCall = useCallback(async () => {
     const sid = sessionIdRef.current;
     if (!sid) return;
+    // Update local state immediately
+    setCallState("ended");
+    setTimeout(() => {
+      if (mountedRef.current) resetCall();
+    }, 2000);
     try {
       await apiEndCall(sid);
     } catch (err) {
       console.error("Failed to end call:", err);
     }
-  }, []);
+  }, [setCallState, resetCall]);
 
   return {
     callState,
