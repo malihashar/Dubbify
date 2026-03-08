@@ -150,6 +150,35 @@ async def agent_join_logic():
     dial.conference('LinguisticLifeLine', start_conference_on_enter=True)
     response.append(dial)
     return Response(content=str(response), media_type="application/xml")
+
+
+@app.post("/disconnect")
+async def handle_disconnect():
+    """Called by the AI agent when silence detected or party hangs up.
+    Ends the conference by hanging up all participants."""
+    global _agent_invited
+    print("--- Disconnect triggered by AI agent ---")
+    _agent_invited = False
+
+    # End all active calls in the conference
+    if client:
+        try:
+            conferences = client.conferences.list(
+                friendly_name='LinguisticLifeLine', status='in-progress'
+            )
+            for conf in conferences:
+                # Update conference to completed, which disconnects all participants
+                client.conferences(conf.sid).update(status='completed')
+                print(f"Conference {conf.sid} ended")
+        except Exception as e:
+            print(f"Error ending conference: {e}")
+
+    # Broadcast call_ended to frontend via WS
+    await broadcast_all({"type": "call_ended"})
+
+    return {"status": "disconnected"}
+
+
 @app.post("/broadcast")
 async def handle_webhook(data: TranslationPayload):
     try:
