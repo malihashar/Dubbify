@@ -52,13 +52,7 @@ else:
     client = None
     print("WARNING: Twilio credentials missing.")
 
-# --- IN-MEMORY SESSION STORE ---
-# In a 9.0 GPA project, you'd use Redis or Supabase. 
-# For now, we store the Operator's SID so the AI knows who to 'Coach'.
-active_sessions = {
-    "operator_call_sid": None,
-    "conference_name": "LinguisticLifeLine"
-}
+# --- IN-MEMORY STATE ---
 
 class TranslationPayload(BaseModel):
     original_text: str
@@ -72,83 +66,84 @@ class BroadcastPayload(BaseModel):
     translated_text: str
 
 class DisconnectPayload(BaseModel):
-    reason: str
+    reason: Optional[str] = None
+
+class LanguageDetectionPayload(BaseModel):
+    foreign: bool
+    language: Optional[str] = None
 
 # --- CORE VOICE LOGIC ---
 
-# --- IN-MEMORY SESSION STORE ---
-# We need to track the Caller's CallSid to move them later
-active_sessions = {
-    "caller_call_sid": None,
-    "conference_name": "Emergency_Relay_Room"
-}
+CONFERENCE_NAME = "LinguisticLifeLine"
+_ai_agent_dialed = False  # Only dial AI agent once per conference
 
-# --- 1. INITIAL INBOUND ROUTER ---
+# --- 1. INBOUND CALL → ALL PARTIES JOIN CONFERENCE ---
 @app.api_route("/voice", methods=["GET", "POST"])
 async def handle_voice_routing(request: Request):
+    """
+    Foreign caller dials in → put them in the conference immediately.
+    Then dial the AI agent and operator into the same conference.
+    All 3 hear each other. AI translates between the two humans.
+    """
     params = await request.form()
     from_number = params.get("From", "")
-    call_sid = params.get("CallSid")
+    print(f"--- INCOMING CALL from {from_number} ---")
 
     response = VoiceResponse()
 
-    # IF THIS IS THE FOREIGN CALLER (First time dialing in)
-    if from_number != AI_AGENT_ID_NUMBER:
-        print(f"--- INTAKE STARTED: Caller {from_number} ---")
-        active_sessions["caller_call_sid"] = call_sid
-        
-        # Connect them DIRECTLY to the AI Agent for the intake interview
-        dial = Dial(direct_connect=True)
-        dial.number(AI_AGENT_ID_NUMBER)
-        response.append(dial)
-        return Response(content=str(response), media_type="application/xml")
-
-    # If the AI Agent ever dials back in directly for some reason
-    print("--- AI AGENT RE-JOINED ---")
+    # Put the caller into the conference
     dial = Dial()
-    dial.conference(active_sessions["conference_name"], beep=False)
+    dial.conference(CONFERENCE_NAME, start_conference_on_enter=True, beep=False)
+    response.append(dial)
+
+    # Only dial the AI agent once for the first caller — subsequent callers just join
+    global _ai_agent_dialed
+    if client and not _ai_agent_dialed and from_number != AI_AGENT_ID_NUMBER:
+        _ai_agent_dialed = True
+        print("--- DIALING AI AGENT into conference (first caller) ---")
+        client.calls.create(
+            from_=TORONTO_BIZ_NUMBER,
+            to=AI_AGENT_ID_NUMBER,
+            url=f"{BASE_URL}/ai-join"
+        )
+    else:
+        print(f"--- {from_number} joined existing conference ---")
+
+    return Response(content=str(response), media_type="application/xml")
+
+@app.api_route("/ai-join", methods=["GET", "POST"])
+async def ai_join():
+    """TwiML for the AI agent to join the conference."""
+    print("--- AI AGENT JOINING CONFERENCE ---")
+    response = VoiceResponse()
+    dial = Dial()
+    dial.conference(CONFERENCE_NAME, start_conference_on_enter=True, beep=False)
     response.append(dial)
     return Response(content=str(response), media_type="application/xml")
 
 @app.api_route("/operator-join", methods=["GET", "POST"])
 async def operator_join():
-    """
-    Dedicated endpoint for the Operator to join the conference.
-    """
+    """TwiML for the operator to join the conference."""
     print("--- OPERATOR JOINING CONFERENCE ---")
     response = VoiceResponse()
     dial = Dial()
-    # The operator joins unmuted so they can speak to the caller
-    dial.conference(active_sessions["conference_name"], muted=False, beep=True)
+    dial.conference(CONFERENCE_NAME, start_conference_on_enter=True, beep=False)
     response.append(dial)
     return Response(content=str(response), media_type="application/xml")
-
-# --- 2. THE HANDOFF WEBHOOK (Triggered by ElevenLabs Tool) ---
-@app.post("/handoff")
-async def handle_ai_handoff(request: Request):
-    """
-    Called by ElevenLabs Tool: 'connect_to_operator'
-    """
-    print("--- AI TOOL TRIGGERED: Initiating Handoff ---")
-    
-    if client and active_sessions["caller_call_sid"]:
-        # A. Move the Foreign Caller from the 1-on-1 call into the Conference
-        # We redirect their existing CallSid to a new TwiML instruction
-        client.calls(active_sessions["caller_call_sid"]).update(
-            twiml=f'<Response><Dial><Conference>{active_sessions["conference_name"]}</Conference></Dial></Response>'
-        )
-
-        # B. Summon the Operator (Web Client)
-        # Twilio rings the React frontend. When the operator accepts, 
-        # Twilio requests f"{BASE_URL}/operator-join" to get instructions.
-        client.calls.create(
-            from_=TORONTO_BIZ_NUMBER,
-            to=f"client:{OPERATOR_CLIENT_ID}", 
-            url=f"{BASE_URL}/operator-join"
-        )
-
-    return {"status": "bridging_complete"}
 # --- WEBHOOKS & DATA ---
+
+@app.post("/language-detected")
+async def handle_language_detection(data: LanguageDetectionPayload):
+    """Called by AI agent when it detects whether the caller speaks a foreign language."""
+    timestamp = datetime.now().strftime("%H:%M:%S")
+    print(f"\n[{timestamp}] --- LANGUAGE DETECTION ---")
+    print(f"Foreign language detected: {data.foreign}")
+    if data.foreign and data.language:
+        print(f"Language: {data.language}")
+    else:
+        print("Language: English (no translation needed)")
+    print("-" * 35)
+    return {"status": "received"}
 
 @app.post("/broadcast")
 async def handle_elevenlabs_webhook(data: TranslationPayload):
@@ -171,7 +166,7 @@ async def handle_disconnect():
     if client:
         try:
             conferences = client.conferences.list(
-                friendly_name=active_sessions["conference_name"],
+                friendly_name=CONFERENCE_NAME,
                 status="in-progress"
             )
             for conf in conferences:
@@ -180,12 +175,14 @@ async def handle_disconnect():
         except Exception as e:
             print(f"Failed to close conference: {e}")
             
-    active_sessions["caller_call_sid"] = None
+    global _ai_agent_dialed
+    _ai_agent_dialed = False
+    print("Cleanup complete.")
     
     return {"status": "cleared"}
 @app.get("/health")
 def health():
-    return {"status": "online", "operator_active": active_sessions["operator_call_sid"] is not None}
+    return {"status": "online"}
 
 if __name__ == "__main__":
     import uvicorn
