@@ -98,6 +98,6 @@ Backend currently keeps sessions in memory; wire `backend/db/supabase_client` in
 - **Service interfaces:** Voice services expose `transcribe_audio`, `detect_language`, `translate_text`, `generate_speech`; routes rely on these.
 - **No cross-folder edits:** Frontend does not modify backend services; backend does not modify UI components.
 
-## Licens
+## License
 
 MIT (or your choice).
